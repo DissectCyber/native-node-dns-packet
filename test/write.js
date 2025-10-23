@@ -1,27 +1,41 @@
-var fs = require('fs');
-var path = require('path');
-var vm = require('vm');
+'use strict';
 
-var Packet = require('../packet');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
 
-var test = require('tap').test;
+const Packet = require('../packet');
 
-var fixtureDir = path.join(__dirname, 'fixtures');
+// Modern tap usage: require('tap') and use t.test / t.equal / t.same.
+const t = require('tap');
 
-var files = fs.readdirSync(fixtureDir).filter(function (f) { return /\.js$/.test(f); });
+const fixtureDir = path.join(__dirname, 'fixtures');
 
-files.forEach(function (file) {
-  test('can parse ' + file, function (t) {
-    var js = 'foo = ' + fs.readFileSync(path.join(fixtureDir, file), 'utf8');
-    js = vm.runInThisContext(js, file);
-    var buff = new Buffer(4096);
-    var written = Packet.write(buff, js);
-    var binFile = path.join(fixtureDir, file.replace(/\.js$/, '.bin'));
-    var bin = fs.readFileSync(binFile);
-    var rtrip = Packet.parse(buff.slice(0, written));
-    t.equivalent(written, bin.length, null, {testMsgLen: file});
-    t.equivalent(buff.slice(0, written), bin, null, {testBin: file});
-    t.equivalent(rtrip, js, null, {testObj: file});
-    t.end();
-  });
+const files = fs
+	.readdirSync(fixtureDir)
+	.filter(f => /\.js$/.test(f));
+
+files.forEach(file => {
+	t.test('can parse ' + file, t => {
+		// Evaluate the fixture JS to a value (same as before), but pass an options object.
+		let jsCode = 'foo = ' + fs.readFileSync(path.join(fixtureDir, file), 'utf8');
+		const js = vm.runInThisContext(jsCode, { filename: file });
+
+		// new Buffer(size) -> Buffer.alloc(size)
+		const buff = Buffer.alloc(4096);
+
+		const written = Packet.write(buff, js);
+
+		const binFile = path.join(fixtureDir, file.replace(/\.js$/, '.bin'));
+		const bin = fs.readFileSync(binFile);
+
+		const rtrip = Packet.parse(buff.slice(0, written));
+
+		// t.equal for numbers; t.same for Buffers/objects
+		t.equal(written, bin.length, `message length matches for ${file}`);
+		t.same(buff.slice(0, written), bin, `binary content matches for ${file}`);
+		t.same(rtrip, js, `round-trip object matches for ${file}`);
+
+		t.end();
+	});
 });
