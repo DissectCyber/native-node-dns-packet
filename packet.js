@@ -150,6 +150,7 @@ var
   WRITE_SRV   = consts.NAME_TO_QTYPE.SRV,
   WRITE_TXT   = consts.NAME_TO_QTYPE.TXT,
   WRITE_SOA   = consts.NAME_TO_QTYPE.SOA,
+  WRITE_CAA   = consts.NAME_TO_QTYPE.CAA,
   WRITE_OPT   = consts.NAME_TO_QTYPE.OPT,
   WRITE_NAPTR = consts.NAME_TO_QTYPE.NAPTR,
   WRITE_TLSA  = consts.NAME_TO_QTYPE.TLSA;
@@ -317,6 +318,19 @@ function writeTxt(buff, val) {
     buff.writeUInt8(dataLen);
     buff.write(val.data[i], dataLen, 'utf8');
   }
+  return WRITE_RESOURCE_DONE;
+}
+
+// For CAA: https://www.rfc-editor.org/rfc/rfc8659#section-4.1
+function writeCaa(buff, val) {
+  assertUndefined(val.flags, 'CAA record requires "flags"');
+  assertUndefined(val.data, 'CAA record requires "data"');
+  assertUndefined(val.tag, 'CAA record requires "tag"');
+  var dataLen = Buffer.byteLength(val.tag, 'utf8');
+  buff.writeUInt8(val.flags);
+  buff.writeUInt8(dataLen);
+  buff.write(val.tag, dataLen, 'utf8');
+  buff.write(val.data, 'utf8');
   return WRITE_RESOURCE_DONE;
 }
 
@@ -494,6 +508,9 @@ Packet.write = function(buff, packet) {
         case WRITE_TXT:
           state = writeTxt(buff, val);
           break;
+        case WRITE_CAA:
+          state = writeCaa(buff, val);
+          break;
         case WRITE_MX:
           state = writeMx(buff, val, label_index);
           break;
@@ -609,6 +626,15 @@ function parseTxt(val, msg, rdata) {
   return PARSE_RESOURCE_DONE;
 }
 
+function parseCaa(val, msg, rdata) {
+  val.flags = msg.readUInt8();
+  var len = msg.readUInt8();
+  val.tag = msg.toString('utf8', len);
+  var endOfValue = rdata.len - 2 - len;
+  val.data = msg.toString('utf8', endOfValue);
+  return PARSE_RESOURCE_DONE;
+}
+
 function parseMx(val, msg, rdata) {
   val.priority = msg.readUInt16BE();
   val.exchange = nameUnpack(msg);
@@ -703,6 +729,7 @@ var
   PARSE_PTR   = consts.NAME_TO_QTYPE.PTR,
   PARSE_MX    = consts.NAME_TO_QTYPE.MX,
   PARSE_TXT   = consts.NAME_TO_QTYPE.TXT,
+  PARSE_CAA   = consts.NAME_TO_QTYPE.CAA,
   PARSE_AAAA  = consts.NAME_TO_QTYPE.AAAA,
   PARSE_SRV   = consts.NAME_TO_QTYPE.SRV,
   PARSE_NAPTR = consts.NAME_TO_QTYPE.NAPTR,
@@ -779,6 +806,9 @@ Packet.parse = function(msg) {
       case PARSE_SPF:
       case PARSE_TXT:
         state = parseTxt(val, msg, rdata);
+        break;
+      case PARSE_CAA:
+        state = parseCaa(val, msg, rdata);
         break;
       case PARSE_MX:
         state = parseMx(val, msg);
