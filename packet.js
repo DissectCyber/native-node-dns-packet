@@ -174,7 +174,26 @@ var
   WRITE_OPT   = consts.NAME_TO_QTYPE.OPT,
   WRITE_NAPTR = consts.NAME_TO_QTYPE.NAPTR,
   WRITE_TLSA  = consts.NAME_TO_QTYPE.TLSA,
-  WRITE_DNAME = consts.NAME_TO_QTYPE.DNAME;
+  WRITE_DNAME = consts.NAME_TO_QTYPE.DNAME,
+  WRITE_DS         = consts.NAME_TO_QTYPE.DS,
+  WRITE_CDS        = consts.NAME_TO_QTYPE.CDS,
+  WRITE_DNSKEY     = consts.NAME_TO_QTYPE.DNSKEY,
+  WRITE_RRSIG      = consts.NAME_TO_QTYPE.RRSIG,
+  WRITE_NSEC       = consts.NAME_TO_QTYPE.NSEC,
+  WRITE_NSEC3      = consts.NAME_TO_QTYPE.NSEC3,
+  WRITE_NSEC3PARAM = consts.NAME_TO_QTYPE.NSEC3PARAM,
+  WRITE_SSHFP      = consts.NAME_TO_QTYPE.SSHFP,
+  WRITE_SMIMEA     = consts.NAME_TO_QTYPE.SMIMEA,
+  WRITE_CERT       = consts.NAME_TO_QTYPE.CERT,
+  WRITE_DHCID      = consts.NAME_TO_QTYPE.DHCID,
+  WRITE_OPENPGPKEY = consts.NAME_TO_QTYPE.OPENPGPKEY,
+  WRITE_IPSECKEY   = consts.NAME_TO_QTYPE.IPSECKEY,
+  WRITE_URI        = consts.NAME_TO_QTYPE.URI,
+  WRITE_LOC        = consts.NAME_TO_QTYPE.LOC,
+  WRITE_CSYNC      = consts.NAME_TO_QTYPE.CSYNC,
+  WRITE_ZONEMD     = consts.NAME_TO_QTYPE.ZONEMD,
+  WRITE_SVCB       = consts.NAME_TO_QTYPE.SVCB,
+  WRITE_HTTPS      = consts.NAME_TO_QTYPE.HTTPS;
 
 function writeHeader(buff, packet) {
   assert(packet.header, 'Packet requires "header"');
@@ -311,6 +330,21 @@ function writeResourceDone(buff, rdata) {
   buff.writeUInt16BE(pos - rdata.pos - 2);
   buff.seek(pos);
   return WRITE_RESOURCE_RECORD;
+}
+
+// Inverse of ipToByteArray: format a 4-byte buffer as dotted IPv4.
+function ipv4FromBytes(buf) {
+  return buf[0] + '.' + buf[1] + '.' + buf[2] + '.' + buf[3];
+}
+
+// Format a 16-byte buffer as IPv6 in the same (non-zero-compressed) form that
+// parseAAAA produces, so it round-trips through ipToByteArray.
+function ipv6FromBytes(buf) {
+  var groups = [];
+  for (var i = 0; i < 16; i += 2) {
+    groups.push(((buf[i] << 8) | buf[i + 1]).toString(16));
+  }
+  return groups.join(':');
 }
 
 // Parse an IPv4 or IPv6 address string into its network-order byte array
@@ -508,6 +542,234 @@ function writeTlsa(buff, val) {
   return WRITE_RESOURCE_DONE;
 }
 
+// DS (RFC 4034 section 5.1) and CDS (RFC 7344) share this layout.
+function writeDs(buff, val) {
+  assertUndefined(val.key_tag, 'DS record requires "key_tag"');
+  assertUndefined(val.algorithm, 'DS record requires "algorithm"');
+  assertUndefined(val.digest_type, 'DS record requires "digest_type"');
+  assertUndefined(val.digest, 'DS record requires "digest"');
+  buff.writeUInt16BE(val.key_tag & 0xFFFF);
+  buff.writeUInt8(val.algorithm);
+  buff.writeUInt8(val.digest_type);
+  buff.copy(val.digest);
+  return WRITE_RESOURCE_DONE;
+}
+
+// DNSKEY (RFC 4034 section 2.1).
+function writeDnskey(buff, val) {
+  assertUndefined(val.flags, 'DNSKEY record requires "flags"');
+  assertUndefined(val.protocol, 'DNSKEY record requires "protocol"');
+  assertUndefined(val.algorithm, 'DNSKEY record requires "algorithm"');
+  assertUndefined(val.public_key, 'DNSKEY record requires "public_key"');
+  buff.writeUInt16BE(val.flags & 0xFFFF);
+  buff.writeUInt8(val.protocol);
+  buff.writeUInt8(val.algorithm);
+  buff.copy(val.public_key);
+  return WRITE_RESOURCE_DONE;
+}
+
+// RRSIG (RFC 4034 section 3.1). The signer name is not compressed.
+function writeRrsig(buff, val) {
+  assertUndefined(val.type_covered, 'RRSIG record requires "type_covered"');
+  assertUndefined(val.algorithm, 'RRSIG record requires "algorithm"');
+  assertUndefined(val.labels, 'RRSIG record requires "labels"');
+  assertUndefined(val.original_ttl, 'RRSIG record requires "original_ttl"');
+  assertUndefined(val.expiration, 'RRSIG record requires "expiration"');
+  assertUndefined(val.inception, 'RRSIG record requires "inception"');
+  assertUndefined(val.key_tag, 'RRSIG record requires "key_tag"');
+  assertUndefined(val.signer, 'RRSIG record requires "signer"');
+  assertUndefined(val.signature, 'RRSIG record requires "signature"');
+  buff.writeUInt16BE(val.type_covered & 0xFFFF);
+  buff.writeUInt8(val.algorithm);
+  buff.writeUInt8(val.labels);
+  buff.writeUInt32BE(val.original_ttl >>> 0);
+  buff.writeUInt32BE(val.expiration >>> 0);
+  buff.writeUInt32BE(val.inception >>> 0);
+  buff.writeUInt16BE(val.key_tag & 0xFFFF);
+  namePackUncompressed(val.signer, buff);
+  buff.copy(val.signature);
+  return WRITE_RESOURCE_DONE;
+}
+
+// NSEC (RFC 4034 section 4.1). The next domain name is not compressed; the
+// type bit maps are kept as raw bytes.
+function writeNsec(buff, val) {
+  assertUndefined(val.next_domain, 'NSEC record requires "next_domain"');
+  assertUndefined(val.type_bitmap, 'NSEC record requires "type_bitmap"');
+  namePackUncompressed(val.next_domain, buff);
+  buff.copy(val.type_bitmap);
+  return WRITE_RESOURCE_DONE;
+}
+
+// NSEC3 (RFC 5155 section 3.2).
+function writeNsec3(buff, val) {
+  assertUndefined(val.hash_algorithm, 'NSEC3 record requires "hash_algorithm"');
+  assertUndefined(val.flags, 'NSEC3 record requires "flags"');
+  assertUndefined(val.iterations, 'NSEC3 record requires "iterations"');
+  assertUndefined(val.salt, 'NSEC3 record requires "salt"');
+  assertUndefined(val.next_hashed_owner, 'NSEC3 record requires "next_hashed_owner"');
+  assertUndefined(val.type_bitmap, 'NSEC3 record requires "type_bitmap"');
+  buff.writeUInt8(val.hash_algorithm);
+  buff.writeUInt8(val.flags);
+  buff.writeUInt16BE(val.iterations & 0xFFFF);
+  buff.writeUInt8(val.salt.length);
+  buff.copy(val.salt);
+  buff.writeUInt8(val.next_hashed_owner.length);
+  buff.copy(val.next_hashed_owner);
+  buff.copy(val.type_bitmap);
+  return WRITE_RESOURCE_DONE;
+}
+
+// NSEC3PARAM (RFC 5155 section 4.2).
+function writeNsec3param(buff, val) {
+  assertUndefined(val.hash_algorithm, 'NSEC3PARAM record requires "hash_algorithm"');
+  assertUndefined(val.flags, 'NSEC3PARAM record requires "flags"');
+  assertUndefined(val.iterations, 'NSEC3PARAM record requires "iterations"');
+  assertUndefined(val.salt, 'NSEC3PARAM record requires "salt"');
+  buff.writeUInt8(val.hash_algorithm);
+  buff.writeUInt8(val.flags);
+  buff.writeUInt16BE(val.iterations & 0xFFFF);
+  buff.writeUInt8(val.salt.length);
+  buff.copy(val.salt);
+  return WRITE_RESOURCE_DONE;
+}
+
+// SSHFP (RFC 4255 section 3.1).
+function writeSshfp(buff, val) {
+  assertUndefined(val.algorithm, 'SSHFP record requires "algorithm"');
+  assertUndefined(val.fptype, 'SSHFP record requires "fptype"');
+  assertUndefined(val.fingerprint, 'SSHFP record requires "fingerprint"');
+  buff.writeUInt8(val.algorithm);
+  buff.writeUInt8(val.fptype);
+  buff.copy(val.fingerprint);
+  return WRITE_RESOURCE_DONE;
+}
+
+// CERT (RFC 4398 section 2).
+function writeCert(buff, val) {
+  assertUndefined(val.cert_type, 'CERT record requires "cert_type"');
+  assertUndefined(val.key_tag, 'CERT record requires "key_tag"');
+  assertUndefined(val.algorithm, 'CERT record requires "algorithm"');
+  assertUndefined(val.certificate, 'CERT record requires "certificate"');
+  buff.writeUInt16BE(val.cert_type & 0xFFFF);
+  buff.writeUInt16BE(val.key_tag & 0xFFFF);
+  buff.writeUInt8(val.algorithm);
+  buff.copy(val.certificate);
+  return WRITE_RESOURCE_DONE;
+}
+
+// DHCID (RFC 4701) -- the RDATA is a single opaque blob.
+function writeDhcid(buff, val) {
+  assertUndefined(val.data, 'DHCID record requires "data"');
+  buff.copy(val.data);
+  return WRITE_RESOURCE_DONE;
+}
+
+// OPENPGPKEY (RFC 7929) -- a single opaque public key blob.
+function writeOpenpgpkey(buff, val) {
+  assertUndefined(val.public_key, 'OPENPGPKEY record requires "public_key"');
+  buff.copy(val.public_key);
+  return WRITE_RESOURCE_DONE;
+}
+
+// IPSECKEY (RFC 4025 section 2). Gateway encoding depends on gateway_type:
+// 0 = none, 1 = IPv4, 2 = IPv6, 3 = uncompressed domain name.
+function writeIpseckey(buff, val) {
+  assertUndefined(val.precedence, 'IPSECKEY record requires "precedence"');
+  assertUndefined(val.gateway_type, 'IPSECKEY record requires "gateway_type"');
+  assertUndefined(val.algorithm, 'IPSECKEY record requires "algorithm"');
+  assertUndefined(val.public_key, 'IPSECKEY record requires "public_key"');
+  buff.writeUInt8(val.precedence);
+  buff.writeUInt8(val.gateway_type);
+  buff.writeUInt8(val.algorithm);
+  switch (val.gateway_type) {
+    case 0:
+      break;
+    case 1:
+    case 2:
+      ipToByteArray(val.gateway).forEach(function(b) { buff.writeUInt8(b); });
+      break;
+    case 3:
+      namePackUncompressed(val.gateway, buff);
+      break;
+    default:
+      throw new Error('IPSECKEY unknown gateway_type: ' + val.gateway_type);
+  }
+  buff.copy(val.public_key);
+  return WRITE_RESOURCE_DONE;
+}
+
+// URI (RFC 7553). Target is the remaining RDATA as text (no length prefix).
+function writeUri(buff, val) {
+  assertUndefined(val.priority, 'URI record requires "priority"');
+  assertUndefined(val.weight, 'URI record requires "weight"');
+  assertUndefined(val.target, 'URI record requires "target"');
+  buff.writeUInt16BE(val.priority & 0xFFFF);
+  buff.writeUInt16BE(val.weight & 0xFFFF);
+  buff.write(val.target, Buffer.byteLength(val.target, 'utf8'), 'utf8');
+  return WRITE_RESOURCE_DONE;
+}
+
+// LOC (RFC 1876 section 2). size/precision/lat/long/altitude are kept in their
+// raw wire-encoded form.
+function writeLoc(buff, val) {
+  assertUndefined(val.version, 'LOC record requires "version"');
+  assertUndefined(val.size, 'LOC record requires "size"');
+  assertUndefined(val.horizontal_precision, 'LOC record requires "horizontal_precision"');
+  assertUndefined(val.vertical_precision, 'LOC record requires "vertical_precision"');
+  assertUndefined(val.latitude, 'LOC record requires "latitude"');
+  assertUndefined(val.longitude, 'LOC record requires "longitude"');
+  assertUndefined(val.altitude, 'LOC record requires "altitude"');
+  buff.writeUInt8(val.version);
+  buff.writeUInt8(val.size);
+  buff.writeUInt8(val.horizontal_precision);
+  buff.writeUInt8(val.vertical_precision);
+  buff.writeUInt32BE(val.latitude >>> 0);
+  buff.writeUInt32BE(val.longitude >>> 0);
+  buff.writeUInt32BE(val.altitude >>> 0);
+  return WRITE_RESOURCE_DONE;
+}
+
+// CSYNC (RFC 7477 section 2.1).
+function writeCsync(buff, val) {
+  assertUndefined(val.serial, 'CSYNC record requires "serial"');
+  assertUndefined(val.flags, 'CSYNC record requires "flags"');
+  assertUndefined(val.type_bitmap, 'CSYNC record requires "type_bitmap"');
+  buff.writeUInt32BE(val.serial >>> 0);
+  buff.writeUInt16BE(val.flags & 0xFFFF);
+  buff.copy(val.type_bitmap);
+  return WRITE_RESOURCE_DONE;
+}
+
+// ZONEMD (RFC 8976 section 2.1).
+function writeZonemd(buff, val) {
+  assertUndefined(val.serial, 'ZONEMD record requires "serial"');
+  assertUndefined(val.scheme, 'ZONEMD record requires "scheme"');
+  assertUndefined(val.hash_algorithm, 'ZONEMD record requires "hash_algorithm"');
+  assertUndefined(val.digest, 'ZONEMD record requires "digest"');
+  buff.writeUInt32BE(val.serial >>> 0);
+  buff.writeUInt8(val.scheme);
+  buff.writeUInt8(val.hash_algorithm);
+  buff.copy(val.digest);
+  return WRITE_RESOURCE_DONE;
+}
+
+// SVCB (RFC 9460 section 2.2) and HTTPS share this layout. The target name is
+// not compressed; SvcParams are kept as a list of {key, value-bytes}.
+function writeSvcb(buff, val) {
+  assertUndefined(val.priority, 'SVCB/HTTPS record requires "priority"');
+  assertUndefined(val.target, 'SVCB/HTTPS record requires "target"');
+  buff.writeUInt16BE(val.priority & 0xFFFF);
+  namePackUncompressed(val.target, buff);
+  var params = val.params || [];
+  params.forEach(function(p) {
+    buff.writeUInt16BE(p.key & 0xFFFF);
+    buff.writeUInt16BE(p.value.length & 0xFFFF);
+    buff.copy(p.value);
+  });
+  return WRITE_RESOURCE_DONE;
+}
+
 function makeEdns(packet) {
   packet.edns = {
     name: '',
@@ -631,7 +893,58 @@ Packet.write = function(buff, packet) {
           state = writeNaptr(buff, val, label_index);
           break;
         case WRITE_TLSA:
+        case WRITE_SMIMEA:
           state = writeTlsa(buff, val);
+          break;
+        case WRITE_DS:
+        case WRITE_CDS:
+          state = writeDs(buff, val);
+          break;
+        case WRITE_DNSKEY:
+          state = writeDnskey(buff, val);
+          break;
+        case WRITE_RRSIG:
+          state = writeRrsig(buff, val);
+          break;
+        case WRITE_NSEC:
+          state = writeNsec(buff, val);
+          break;
+        case WRITE_NSEC3:
+          state = writeNsec3(buff, val);
+          break;
+        case WRITE_NSEC3PARAM:
+          state = writeNsec3param(buff, val);
+          break;
+        case WRITE_SSHFP:
+          state = writeSshfp(buff, val);
+          break;
+        case WRITE_CERT:
+          state = writeCert(buff, val);
+          break;
+        case WRITE_DHCID:
+          state = writeDhcid(buff, val);
+          break;
+        case WRITE_OPENPGPKEY:
+          state = writeOpenpgpkey(buff, val);
+          break;
+        case WRITE_IPSECKEY:
+          state = writeIpseckey(buff, val);
+          break;
+        case WRITE_URI:
+          state = writeUri(buff, val);
+          break;
+        case WRITE_LOC:
+          state = writeLoc(buff, val);
+          break;
+        case WRITE_CSYNC:
+          state = writeCsync(buff, val);
+          break;
+        case WRITE_ZONEMD:
+          state = writeZonemd(buff, val);
+          break;
+        case WRITE_SVCB:
+        case WRITE_HTTPS:
+          state = writeSvcb(buff, val);
           break;
         case WRITE_END:
           return buff.tell();
@@ -794,6 +1107,165 @@ function parseTlsa(val, msg, rdata) {
   return PARSE_RESOURCE_DONE;
 }
 
+function parseDs(val, msg, rdata) {
+  var end = msg.tell() + rdata.len;
+  val.key_tag = msg.readUInt16BE();
+  val.algorithm = msg.readUInt8();
+  val.digest_type = msg.readUInt8();
+  val.digest = msg.slice(end - msg.tell()).buffer;
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseDnskey(val, msg, rdata) {
+  var end = msg.tell() + rdata.len;
+  val.flags = msg.readUInt16BE();
+  val.protocol = msg.readUInt8();
+  val.algorithm = msg.readUInt8();
+  val.public_key = msg.slice(end - msg.tell()).buffer;
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseRrsig(val, msg, rdata) {
+  var end = msg.tell() + rdata.len;
+  val.type_covered = msg.readUInt16BE();
+  val.algorithm = msg.readUInt8();
+  val.labels = msg.readUInt8();
+  val.original_ttl = msg.readUInt32BE();
+  val.expiration = msg.readUInt32BE();
+  val.inception = msg.readUInt32BE();
+  val.key_tag = msg.readUInt16BE();
+  val.signer = nameUnpack(msg);
+  val.signature = msg.slice(end - msg.tell()).buffer;
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseNsec(val, msg, rdata) {
+  var end = msg.tell() + rdata.len;
+  val.next_domain = nameUnpack(msg);
+  val.type_bitmap = msg.slice(end - msg.tell()).buffer;
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseNsec3(val, msg, rdata) {
+  var end = msg.tell() + rdata.len;
+  val.hash_algorithm = msg.readUInt8();
+  val.flags = msg.readUInt8();
+  val.iterations = msg.readUInt16BE();
+  val.salt = msg.slice(msg.readUInt8()).buffer;
+  val.next_hashed_owner = msg.slice(msg.readUInt8()).buffer;
+  val.type_bitmap = msg.slice(end - msg.tell()).buffer;
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseNsec3param(val, msg, rdata) {
+  val.hash_algorithm = msg.readUInt8();
+  val.flags = msg.readUInt8();
+  val.iterations = msg.readUInt16BE();
+  val.salt = msg.slice(msg.readUInt8()).buffer;
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseSshfp(val, msg, rdata) {
+  var end = msg.tell() + rdata.len;
+  val.algorithm = msg.readUInt8();
+  val.fptype = msg.readUInt8();
+  val.fingerprint = msg.slice(end - msg.tell()).buffer;
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseCert(val, msg, rdata) {
+  var end = msg.tell() + rdata.len;
+  val.cert_type = msg.readUInt16BE();
+  val.key_tag = msg.readUInt16BE();
+  val.algorithm = msg.readUInt8();
+  val.certificate = msg.slice(end - msg.tell()).buffer;
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseDhcid(val, msg, rdata) {
+  val.data = msg.slice(rdata.len).buffer;
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseOpenpgpkey(val, msg, rdata) {
+  val.public_key = msg.slice(rdata.len).buffer;
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseIpseckey(val, msg, rdata) {
+  var end = msg.tell() + rdata.len;
+  val.precedence = msg.readUInt8();
+  val.gateway_type = msg.readUInt8();
+  val.algorithm = msg.readUInt8();
+  switch (val.gateway_type) {
+    case 0:
+      val.gateway = '';
+      break;
+    case 1:
+      val.gateway = ipv4FromBytes(msg.slice(4).buffer);
+      break;
+    case 2:
+      val.gateway = ipv6FromBytes(msg.slice(16).buffer);
+      break;
+    case 3:
+      val.gateway = nameUnpack(msg);
+      break;
+    default:
+      throw new Error('IPSECKEY unknown gateway_type: ' + val.gateway_type);
+  }
+  val.public_key = msg.slice(end - msg.tell()).buffer;
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseUri(val, msg, rdata) {
+  var end = msg.tell() + rdata.len;
+  val.priority = msg.readUInt16BE();
+  val.weight = msg.readUInt16BE();
+  val.target = msg.toString('utf8', end - msg.tell());
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseLoc(val, msg, rdata) {
+  val.version = msg.readUInt8();
+  val.size = msg.readUInt8();
+  val.horizontal_precision = msg.readUInt8();
+  val.vertical_precision = msg.readUInt8();
+  val.latitude = msg.readUInt32BE();
+  val.longitude = msg.readUInt32BE();
+  val.altitude = msg.readUInt32BE();
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseCsync(val, msg, rdata) {
+  var end = msg.tell() + rdata.len;
+  val.serial = msg.readUInt32BE();
+  val.flags = msg.readUInt16BE();
+  val.type_bitmap = msg.slice(end - msg.tell()).buffer;
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseZonemd(val, msg, rdata) {
+  var end = msg.tell() + rdata.len;
+  val.serial = msg.readUInt32BE();
+  val.scheme = msg.readUInt8();
+  val.hash_algorithm = msg.readUInt8();
+  val.digest = msg.slice(end - msg.tell()).buffer;
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseSvcb(val, msg, rdata) {
+  var end = msg.tell() + rdata.len;
+  val.priority = msg.readUInt16BE();
+  val.target = nameUnpack(msg);
+  val.params = [];
+  while (msg.tell() < end) {
+    var key = msg.readUInt16BE();
+    var len = msg.readUInt16BE();
+    val.params.push({ key: key, value: msg.slice(len).buffer });
+  }
+  return PARSE_RESOURCE_DONE;
+}
+
 // https://tools.ietf.org/html/rfc6891#section-6.1.2
 // https://tools.ietf.org/html/rfc2671#section-4.4
 //       - [payload size selection](https://tools.ietf.org/html/rfc6891#section-6.2.5)
@@ -846,8 +1318,27 @@ var
   PARSE_OPT   = consts.NAME_TO_QTYPE.OPT,
   PARSE_SPF   = consts.NAME_TO_QTYPE.SPF,
   PARSE_TLSA  = consts.NAME_TO_QTYPE.TLSA,
-  PARSE_DNAME = consts.NAME_TO_QTYPE.DNAME;
-  
+  PARSE_DNAME = consts.NAME_TO_QTYPE.DNAME,
+  PARSE_DS         = consts.NAME_TO_QTYPE.DS,
+  PARSE_CDS        = consts.NAME_TO_QTYPE.CDS,
+  PARSE_DNSKEY     = consts.NAME_TO_QTYPE.DNSKEY,
+  PARSE_RRSIG      = consts.NAME_TO_QTYPE.RRSIG,
+  PARSE_NSEC       = consts.NAME_TO_QTYPE.NSEC,
+  PARSE_NSEC3      = consts.NAME_TO_QTYPE.NSEC3,
+  PARSE_NSEC3PARAM = consts.NAME_TO_QTYPE.NSEC3PARAM,
+  PARSE_SSHFP      = consts.NAME_TO_QTYPE.SSHFP,
+  PARSE_SMIMEA     = consts.NAME_TO_QTYPE.SMIMEA,
+  PARSE_CERT       = consts.NAME_TO_QTYPE.CERT,
+  PARSE_DHCID      = consts.NAME_TO_QTYPE.DHCID,
+  PARSE_OPENPGPKEY = consts.NAME_TO_QTYPE.OPENPGPKEY,
+  PARSE_IPSECKEY   = consts.NAME_TO_QTYPE.IPSECKEY,
+  PARSE_URI        = consts.NAME_TO_QTYPE.URI,
+  PARSE_LOC        = consts.NAME_TO_QTYPE.LOC,
+  PARSE_CSYNC      = consts.NAME_TO_QTYPE.CSYNC,
+  PARSE_ZONEMD     = consts.NAME_TO_QTYPE.ZONEMD,
+  PARSE_SVCB       = consts.NAME_TO_QTYPE.SVCB,
+  PARSE_HTTPS      = consts.NAME_TO_QTYPE.HTTPS;
+
 
 Packet.parse = function(msg) {
   var state,
@@ -938,7 +1429,58 @@ Packet.parse = function(msg) {
         state = parseNaptr(val, msg);
         break;
       case PARSE_TLSA:
+      case PARSE_SMIMEA:
         state = parseTlsa(val, msg, rdata);
+        break;
+      case PARSE_DS:
+      case PARSE_CDS:
+        state = parseDs(val, msg, rdata);
+        break;
+      case PARSE_DNSKEY:
+        state = parseDnskey(val, msg, rdata);
+        break;
+      case PARSE_RRSIG:
+        state = parseRrsig(val, msg, rdata);
+        break;
+      case PARSE_NSEC:
+        state = parseNsec(val, msg, rdata);
+        break;
+      case PARSE_NSEC3:
+        state = parseNsec3(val, msg, rdata);
+        break;
+      case PARSE_NSEC3PARAM:
+        state = parseNsec3param(val, msg, rdata);
+        break;
+      case PARSE_SSHFP:
+        state = parseSshfp(val, msg, rdata);
+        break;
+      case PARSE_CERT:
+        state = parseCert(val, msg, rdata);
+        break;
+      case PARSE_DHCID:
+        state = parseDhcid(val, msg, rdata);
+        break;
+      case PARSE_OPENPGPKEY:
+        state = parseOpenpgpkey(val, msg, rdata);
+        break;
+      case PARSE_IPSECKEY:
+        state = parseIpseckey(val, msg, rdata);
+        break;
+      case PARSE_URI:
+        state = parseUri(val, msg, rdata);
+        break;
+      case PARSE_LOC:
+        state = parseLoc(val, msg, rdata);
+        break;
+      case PARSE_CSYNC:
+        state = parseCsync(val, msg, rdata);
+        break;
+      case PARSE_ZONEMD:
+        state = parseZonemd(val, msg, rdata);
+        break;
+      case PARSE_SVCB:
+      case PARSE_HTTPS:
+        state = parseSvcb(val, msg, rdata);
         break;
       case PARSE_END:
         return packet;
