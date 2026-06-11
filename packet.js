@@ -26,11 +26,9 @@
 'use strict';
 
 var consts = require('./consts'),
-    BufferCursor = require('buffercursor'),
+    BufferCursor = require('./buffercursor'),
     BufferCursorOverflow = BufferCursor.BufferCursorOverflow,
-    ipaddr = require('ipaddr.js'),
-    assert = require('assert'),
-    util = require('util');
+    assert = require('assert');
 
 function assertUndefined(val, msg) {
   assert(typeof val != 'undefined', msg);
@@ -130,6 +128,28 @@ function namePack(str, buff, index) {
   }
 }
 
+// Write a domain name with full labels only -- no compression pointers, and
+// without registering its labels as future compression targets. Required for
+// RDATA whose names must not be compressed, e.g. the SRV target (RFC 2782).
+function namePackUncompressed(str, buff) {
+  var dot, part;
+
+  while (str) {
+    dot = str.indexOf('.');
+    if (dot > -1) {
+      part = str.slice(0, dot);
+      str = str.slice(dot + 1);
+    } else {
+      part = str;
+      str = undefined;
+    }
+    buff.writeUInt8(part.length);
+    buff.write(part, part.length, 'ascii');
+  }
+
+  buff.writeUInt8(0);
+}
+
 var
   WRITE_HEADER              = 100001,
   WRITE_TRUNCATE            = 100002,
@@ -153,7 +173,8 @@ var
   WRITE_CAA   = consts.NAME_TO_QTYPE.CAA,
   WRITE_OPT   = consts.NAME_TO_QTYPE.OPT,
   WRITE_NAPTR = consts.NAME_TO_QTYPE.NAPTR,
-  WRITE_TLSA  = consts.NAME_TO_QTYPE.TLSA;
+  WRITE_TLSA  = consts.NAME_TO_QTYPE.TLSA,
+  WRITE_DNAME = consts.NAME_TO_QTYPE.DNAME;
 
 function writeHeader(buff, packet) {
   assert(packet.header, 'Packet requires "header"');
@@ -292,10 +313,81 @@ function writeResourceDone(buff, rdata) {
   return WRITE_RESOURCE_RECORD;
 }
 
+// Parse an IPv4 or IPv6 address string into its network-order byte array
+// (4 bytes for IPv4, 16 for IPv6). Replaces the former ipaddr.js dependency.
+function ipToByteArray(address) {
+  if (address.indexOf(':') === -1) {
+    return parseIPv4(address);
+  }
+  return parseIPv6(address);
+}
+
+function parseIPv4(address) {
+  var parts = address.split('.');
+  assert(parts.length === 4, 'Invalid IPv4 address: ' + address);
+  return parts.map(function(part) {
+    var byte = parseInt(part, 10);
+    assert(/^\d+$/.test(part) && byte >= 0 && byte <= 255,
+      'Invalid IPv4 address: ' + address);
+    return byte;
+  });
+}
+
+function parseIPv6(address) {
+  // Split into the part before and after the "::" zero-compression marker.
+  var halves = address.split('::');
+  assert(halves.length <= 2, 'Invalid IPv6 address: ' + address);
+
+  function expand(group) {
+    if (group === '') return [];
+    return group.split(':');
+  }
+
+  var head = expand(halves[0]);
+  var tail = halves.length === 2 ? expand(halves[1]) : [];
+
+  // A trailing dotted-quad (e.g. "::ffff:1.2.3.4") contributes two 16-bit
+  // groups; pull it off the end and convert.
+  var trailer = [];
+  var combined = head.concat(tail);
+  var last = combined[combined.length - 1];
+  if (last !== undefined && last.indexOf('.') !== -1) {
+    var v4 = parseIPv4(last);
+    trailer = [
+      ((v4[0] << 8) | v4[1]).toString(16),
+      ((v4[2] << 8) | v4[3]).toString(16)
+    ];
+    if (tail.length) {
+      tail = tail.slice(0, -1).concat(trailer);
+    } else {
+      head = head.slice(0, -1).concat(trailer);
+    }
+  }
+
+  var groups;
+  if (halves.length === 2) {
+    var fill = 8 - (head.length + tail.length);
+    assert(fill >= 1, 'Invalid IPv6 address: ' + address);
+    groups = head.concat(new Array(fill).fill('0'), tail);
+  } else {
+    groups = head;
+  }
+
+  assert(groups.length === 8, 'Invalid IPv6 address: ' + address);
+
+  var bytes = [];
+  groups.forEach(function(group) {
+    assert(/^[0-9a-fA-F]{1,4}$/.test(group), 'Invalid IPv6 address: ' + address);
+    var word = parseInt(group, 16);
+    bytes.push((word >> 8) & 0xFF, word & 0xFF);
+  });
+  return bytes;
+}
+
 function writeIp(buff, val) {
   //TODO XXX FIXME -- assert that address is of proper type
   assertUndefined(val.address, 'A/AAAA record requires "address"');
-  val = ipaddr.parse(val.address).toByteArray();
+  val = ipToByteArray(val.address);
   val.forEach(function(b) {
     buff.writeUInt8(b);
   });
@@ -305,6 +397,14 @@ function writeIp(buff, val) {
 function writeCname(buff, val, label_index) {
   assertUndefined(val.data, 'NS/CNAME/PTR record requires "data"');
   namePack(val.data, buff, label_index);
+  return WRITE_RESOURCE_DONE;
+}
+
+// DNAME shares CNAME's shape (a single <domain-name> in `data`), but its
+// target MUST NOT be compressed (RFC 6672 section 2.1 / RFC 3597 section 4).
+function writeDname(buff, val) {
+  assertUndefined(val.data, 'DNAME record requires "data"');
+  namePackUncompressed(val.data, buff);
   return WRITE_RESOURCE_DONE;
 }
 
@@ -343,7 +443,6 @@ function writeMx(buff, val, label_index) {
 }
 
 // SRV: https://tools.ietf.org/html/rfc2782
-// TODO: SRV fixture failing for '_xmpp-server._tcp.gmail.com.srv.js'
 function writeSrv(buff, val, label_index) {
   assertUndefined(val.priority, 'SRV record requires "priority"');
   assertUndefined(val.weight, 'SRV record requires "weight"');
@@ -352,7 +451,8 @@ function writeSrv(buff, val, label_index) {
   buff.writeUInt16BE(val.priority & 0xFFFF);
   buff.writeUInt16BE(val.weight & 0xFFFF);
   buff.writeUInt16BE(val.port & 0xFFFF);
-  namePack(val.target, buff, label_index);
+  // SRV targets MUST NOT be compressed (RFC 2782).
+  namePackUncompressed(val.target, buff);
   return WRITE_RESOURCE_DONE;
 }
 
@@ -390,7 +490,8 @@ function writeNaptr(buff, val, label_index) {
   buff.write(val.service, val.service.length, 'ascii');
   buff.writeUInt8(val.regexp.length);
   buff.write(val.regexp, val.regexp.length, 'ascii');
-  namePack(val.replacement, buff, label_index);
+  // NAPTR replacement names MUST NOT be compressed (RFC 3597 section 4).
+  namePackUncompressed(val.replacement, buff);
   return WRITE_RESOURCE_DONE;
 }
 
@@ -503,6 +604,9 @@ Packet.write = function(buff, packet) {
         case WRITE_CNAME:
         case WRITE_PTR:
           state = writeCname(buff, val, label_index);
+          break;
+        case WRITE_DNAME:
+          state = writeDname(buff, val);
           break;
         case WRITE_SPF:
         case WRITE_TXT:
@@ -627,11 +731,18 @@ function parseTxt(val, msg, rdata) {
 }
 
 function parseCaa(val, msg, rdata) {
+  // RDATA layout (RFC 8659 section 4.1): flags (1) + tag length (1) + tag + value
   val.flags = msg.readUInt8();
   var len = msg.readUInt8();
+  // Bytes left in this record after the flags and tag-length octets.
+  var avail = Math.max(rdata.len - 2, 0);
+  // Clamp a bogus tag length so we can't read past the record and compute a
+  // negative value length, which would seek the cursor backwards and desync
+  // parsing of any records that follow.
+  if (len > avail)
+    len = avail;
   val.tag = msg.toString('utf8', len);
-  var endOfValue = rdata.len - 2 - len;
-  val.data = msg.toString('utf8', endOfValue);
+  val.data = msg.toString('utf8', avail - len);
   return PARSE_RESOURCE_DONE;
 }
 
@@ -641,8 +752,7 @@ function parseMx(val, msg, rdata) {
   return PARSE_RESOURCE_DONE;
 }
 
-// TODO: SRV fixture failing for '_xmpp-server._tcp.gmail.com.srv.js'
-//       https://tools.ietf.org/html/rfc2782
+// https://tools.ietf.org/html/rfc2782
 function parseSrv(val, msg) {
   val.priority = msg.readUInt16BE();
   val.weight = msg.readUInt16BE();
@@ -735,7 +845,8 @@ var
   PARSE_NAPTR = consts.NAME_TO_QTYPE.NAPTR,
   PARSE_OPT   = consts.NAME_TO_QTYPE.OPT,
   PARSE_SPF   = consts.NAME_TO_QTYPE.SPF,
-  PARSE_TLSA  = consts.NAME_TO_QTYPE.TLSA;
+  PARSE_TLSA  = consts.NAME_TO_QTYPE.TLSA,
+  PARSE_DNAME = consts.NAME_TO_QTYPE.DNAME;
   
 
 Packet.parse = function(msg) {
@@ -801,6 +912,7 @@ Packet.parse = function(msg) {
       case PARSE_NS:
       case PARSE_CNAME:
       case PARSE_PTR:
+      case PARSE_DNAME:
         state = parseCname(val, msg);
         break;
       case PARSE_SPF:

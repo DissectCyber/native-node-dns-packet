@@ -1,25 +1,25 @@
 'use strict';
 
-var fs = require('fs');
-var path = require('path');
-var vm = require('vm');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+const { test } = require('node:test');
+const assert = require('node:assert');
 
-var Packet = require('../packet');
+const Packet = require('../packet');
 
-var test = require('tap').test;
+const fixtureDir = path.join(__dirname, 'fixtures');
 
-var fixtureDir = path.join(__dirname, 'fixtures');
+const files = fs.readdirSync(fixtureDir).filter(f => /\.bin$/.test(f));
 
-var files = fs.readdirSync(fixtureDir).filter(function (f) { return /\.bin$/.test(f); });
-
-files.forEach(function (file) {
-	test('can parse ' + file, function (t) {
-		var bin = fs.readFileSync(path.join(fixtureDir, file));
-		var jsFile = path.join(fixtureDir, file.replace(/\.bin$/, '.js'));
-		var js = 'foo = ' + fs.readFileSync(jsFile, 'utf8');
-		js = vm.runInThisContext(js, { filename: jsFile });
-		var ret = Packet.parse(bin);
-		t.same(ret, js);
-		t.end();
+files.forEach(file => {
+	test('can parse ' + file, () => {
+		const bin = fs.readFileSync(path.join(fixtureDir, file));
+		const jsFile = path.join(fixtureDir, file.replace(/\.bin$/, '.js'));
+		const js = vm.runInThisContext('foo = ' + fs.readFileSync(jsFile, 'utf8'), { filename: jsFile });
+		const ret = Packet.parse(bin);
+		// deepEqual (not strict) so the Packet instance compares structurally
+		// against the plain-object fixture without tripping on prototypes.
+		assert.deepEqual(ret, js);
 	});
 });

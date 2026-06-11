@@ -91,6 +91,8 @@ var NAME_TO_QTYPE = exports.NAME_TO_QTYPE = {
   RKEY: 57,
   TALINK: 58,
   CDS: 59,
+  SVCB: 64,
+  HTTPS: 65,
   SPF: 99,
   UINFO: 100,
   UID: 101,
